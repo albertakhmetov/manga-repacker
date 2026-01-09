@@ -1,4 +1,3 @@
-```markdown
 # Manga RePacker
 
 A simple tool for reorganizing manga chapters into volume-based `.cbz` archives.
@@ -46,4 +45,3 @@ Where:
 ## License
 
 GPL-3.0
-```
