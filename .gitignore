@@ -89,3 +89,4 @@ $RECYCLE.BIN/
 
 .editorconfig
 /target/*
+/src/MangaRePacker/Properties/launchSettings.json

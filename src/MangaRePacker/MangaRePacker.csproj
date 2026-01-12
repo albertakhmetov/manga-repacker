@@ -11,5 +11,10 @@
 
     <OutputPath>..\..\target\$(Configuration)\$(MSBuildProjectName)\</OutputPath>
   </PropertyGroup>
+	
+    <PropertyGroup>
+        <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+        <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    </PropertyGroup>
 
 </Project>

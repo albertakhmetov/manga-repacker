@@ -22,6 +22,8 @@ using System.Globalization;
 using System.IO.Compression;
 using MangaRePacker;
 
+const double MAX_VOLUME_SIZE = 84 * 1024 * 1024;
+
 try
 {
     if (args.Length != 2)
@@ -34,10 +36,8 @@ try
     var sourceDirectory = args[0];
     var outputDirectory = args[1];
 
-    if (!Directory.Exists(sourceDirectory))
-    {
-        throw new DirectoryNotFoundException($"Source Directory isn't found: {sourceDirectory}");
-    }
+    Console.WriteLine($"Source: {sourceDirectory}");
+    Console.WriteLine($"Output: {outputDirectory}");
 
     var data = ComicInfoParser.ParseDirectory(sourceDirectory);
 
@@ -55,6 +55,11 @@ try
         return;
     }
 
+    if (!Directory.Exists(sourceDirectory))
+    {
+        throw new DirectoryNotFoundException($"Source Directory isn't found: {sourceDirectory}");
+    }
+
     ReorganizeComics(sourceDirectory, outputDirectory, data);
 }
 catch (Exception ex)
@@ -66,11 +71,11 @@ catch (Exception ex)
     Console.ResetColor();
 }
 
-static void ReorganizeComics(string sourceDirectory, string outputDirectory, ConcurrentDictionary<string, ComicInfo> comicInfos)
+static void ReorganizeComics(string sourceDirectory, string outputDirectory, ConcurrentDictionary<string, ComicInfo?> comicInfos)
 {
     // Group by volume
     var volumes = comicInfos
-        .GroupBy(kv => kv.Value.Volume)
+        .GroupBy(kv => kv.Value!.Volume)
         .ToDictionary(g => g.Key, g => g.ToList());
 
     if (!volumes.Any()) return;
@@ -95,37 +100,69 @@ static void ReorganizeComics(string sourceDirectory, string outputDirectory, Con
     // Create volume archives
     foreach (var volumeGroup in volumes.OrderBy(volume => volume.Key))
     {
-        int volumeNumber = volumeGroup.Key;
-        string volumeName = $"Vol {volumeNumber.ToString().PadLeft(padding, '0')}";
-        string archivePath = Path.Combine(targetDirectory, $"{mangaName} - {volumeName}.cbz");
+        var volumeNumber = volumeGroup.Key;
+        var volumeName = $"Vol {volumeNumber.ToString().PadLeft(padding, '0')}";
 
         Console.Write($"Generating volume {volumeName}/{maxVolume}...");
 
-        using var archive = ZipFile.Open(archivePath, ZipArchiveMode.Create);
+        ZipArchive? archive = null;
 
-        var maxChapter = volumeGroup.Value.Max(x => x.Value.Number);
-        var chapterPadding = Math.Truncate(maxChapter).ToString().Length;
+        var originalSize = volumeGroup.Value.Select(x => new FileInfo(Path.Combine(sourceDirectory, x.Key)).Length).Sum();
+        var recommendedVolumeSize = originalSize / Math.Round(originalSize / MAX_VOLUME_SIZE);
 
-        foreach (var (fileName, info) in volumeGroup.Value)
+        try
         {
-            if (info == null) continue;
+            var maxChapter = volumeGroup.Value.Max(x => x.Value!.Number);
+            var chapterPadding = Math.Truncate(maxChapter).ToString().Length;
 
-            string sourcePath = Path.Combine(sourceDirectory, fileName);
-            string folderName = FormatChapterNumber(info.Number, chapterPadding);
+            var volumeSize = 0L;
+            var subVolumeNumber = MAX_VOLUME_SIZE > 0 && originalSize > MAX_VOLUME_SIZE * 1.33 ? 1 : 0;
 
-            using var sourceArchive = ZipFile.OpenRead(sourcePath);
-
-            foreach (var entry in sourceArchive.Entries)
+            foreach (var (fileName, info) in volumeGroup.Value)
             {
-                if (string.IsNullOrEmpty(entry.Name)) continue;
+                if (info == null) continue;
 
-                string entryPath = Path.Combine(folderName, entry.Name);
-                var newEntry = archive.CreateEntry(entryPath);
+                if (subVolumeNumber > 0 && volumeSize > recommendedVolumeSize)
+                {
+                    archive?.Dispose();
+                    archive = null;
 
-                using var sourceStream = entry.Open();
-                using var newStream = newEntry.Open();
-                sourceStream.CopyTo(newStream);
+                    volumeSize = 0;
+                    subVolumeNumber++;
+                }
+
+                if (archive is null)
+                {
+                    var archivePath = subVolumeNumber == 0
+                        ? Path.Combine(targetDirectory, $"{mangaName} - {volumeName}.cbz")
+                        : Path.Combine(targetDirectory, $"{mangaName} - {volumeName}.{subVolumeNumber}.cbz");
+
+                    archive = ZipFile.Open(archivePath, ZipArchiveMode.Create);
+                }
+
+                var sourcePath = Path.Combine(sourceDirectory, fileName);
+                var folderName = FormatChapterNumber(info.Number, chapterPadding);
+
+                using var sourceArchive = ZipFile.OpenRead(sourcePath);
+
+                foreach (var entry in sourceArchive.Entries)
+                {
+                    if (string.IsNullOrEmpty(entry.Name)) continue;
+
+                    string entryPath = Path.Combine(folderName, entry.Name);
+                    var newEntry = archive.CreateEntry(entryPath);
+
+                    using var sourceStream = entry.Open();
+                    using var newStream = newEntry.Open();
+                    sourceStream.CopyTo(newStream);
+
+                    volumeSize += entry.CompressedLength;
+                }
             }
+        }
+        finally
+        {
+            archive?.Dispose();
         }
 
         Console.WriteLine(" done.");
