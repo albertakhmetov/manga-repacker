@@ -25,13 +25,24 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml;
 
-public record ComicInfo(int Volume, double Number, string Title);
+public sealed class ComicInfo(int volume, double number, string title)
+{
+    public static ComicInfo Empty { get; } = new ComicInfo(-1, -1, string.Empty);
+
+    public bool IsEmpty => Equals(Empty);
+
+    public int Volume { get; } = volume;
+
+    public double Number { get; } = number;
+
+    public string Title { get; } = title;
+}
 
 public static class ComicInfoParser
 {
-    public static ConcurrentDictionary<string, ComicInfo?> ParseDirectory(string directoryPath)
+    public static ConcurrentDictionary<string, ComicInfo> ParseDirectory(string directoryPath)
     {
-        var result = new ConcurrentDictionary<string, ComicInfo?>();
+        var result = new ConcurrentDictionary<string, ComicInfo>();
         var cbzFiles = Directory.EnumerateFiles(directoryPath, "*.cbz");
 
         Parallel.ForEach(cbzFiles, cbzFile =>
@@ -39,18 +50,18 @@ public static class ComicInfoParser
             try
             {
                 using var archive = ZipFile.OpenRead(cbzFile);
-                var xmlEntry = archive.Entries.FirstOrDefault(e => 
+                var xmlEntry = archive.Entries.FirstOrDefault(e =>
                     e.Name.Equals("ComicInfo.xml", StringComparison.OrdinalIgnoreCase));
-                    
+
                 if (xmlEntry is null)
                 {
-                    result[Path.GetFileName(cbzFile)] = null;
-                    return ;
+                    result[Path.GetFileName(cbzFile)] = ComicInfo.Empty;
+                    return;
                 }
 
                 using var stream = xmlEntry.Open();
                 using var reader = XmlReader.Create(stream);
-                
+
                 string? title = null;
                 while (reader.Read())
                 {
@@ -64,16 +75,16 @@ public static class ComicInfoParser
                 if (title is not null)
                 {
                     var info = ParseTitle(title);
-                    result[Path.GetFileName(cbzFile)] = info;
+                    result[Path.GetFileName(cbzFile)] = info ?? ComicInfo.Empty;
                 }
                 else
                 {
-                    result[Path.GetFileName(cbzFile)] = null;
+                    result[Path.GetFileName(cbzFile)] = ComicInfo.Empty;
                 }
             }
             catch
             {
-                result[Path.GetFileName(cbzFile)] = null;
+                result[Path.GetFileName(cbzFile)] = ComicInfo.Empty;
             }
         });
 
@@ -92,7 +103,7 @@ public static class ComicInfoParser
             {
                 return ParseDashFormat(title);
             }
-            
+
             return null;
         }
         catch
@@ -107,7 +118,7 @@ public static class ComicInfoParser
         if (parts.Length < 4) return null;
 
         int volume = int.Parse(parts[1].TrimEnd('.'));
-        
+
         var numberMatch = System.Text.RegularExpressions.Regex.Match(parts[3], @"(\d+(?:\.\d+)?)");
         if (!numberMatch.Success) return null;
         double number = double.Parse(numberMatch.Value, System.Globalization.CultureInfo.InvariantCulture);

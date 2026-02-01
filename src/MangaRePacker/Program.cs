@@ -21,6 +21,9 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO.Compression;
 using MangaRePacker;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats.Jpeg;
+using SixLabors.ImageSharp.Formats.Png;
 
 const double MAX_VOLUME_SIZE = 84 * 1024 * 1024;
 
@@ -41,11 +44,11 @@ try
 
     var data = ComicInfoParser.ParseDirectory(sourceDirectory);
 
-    if (data.Values.Any(x => x is null))
+    if (data.Values.Any(x => x.IsEmpty))
     {
         Console.ForegroundColor = ConsoleColor.Red;
 
-        foreach (var file in data.Where(x => x.Value is null).Select(x => Path.GetFileNameWithoutExtension(x.Key)))
+        foreach (var file in data.Where(x => x.Value.IsEmpty).Select(x => Path.GetFileNameWithoutExtension(x.Key)))
         {
             Console.WriteLine($"Can't parse file: {file}");
         }
@@ -71,14 +74,14 @@ catch (Exception ex)
     Console.ResetColor();
 }
 
-static void ReorganizeComics(string sourceDirectory, string outputDirectory, ConcurrentDictionary<string, ComicInfo?> comicInfos)
+static void ReorganizeComics(string sourceDirectory, string outputDirectory, ConcurrentDictionary<string, ComicInfo> comicInfos)
 {
     // Group by volume
     var volumes = comicInfos
-        .GroupBy(kv => kv.Value!.Volume)
+        .GroupBy(kv => kv.Value.Volume)
         .ToDictionary(g => g.Key, g => g.ToList());
 
-    if (!volumes.Any()) return;
+    if (volumes.Count == 0) return;
 
     var mangaName = Path.GetFileName(sourceDirectory);
 
@@ -118,7 +121,7 @@ static void ReorganizeComics(string sourceDirectory, string outputDirectory, Con
             var volumeSize = 0L;
             var subVolumeNumber = MAX_VOLUME_SIZE > 0 && originalSize > MAX_VOLUME_SIZE * 1.33 ? 1 : 0;
 
-            foreach (var (fileName, info) in volumeGroup.Value)
+            foreach (var (fileName, info) in volumeGroup.Value.OrderBy(x => x.Value.Number))
             {
                 if (info == null) continue;
 
@@ -150,11 +153,26 @@ static void ReorganizeComics(string sourceDirectory, string outputDirectory, Con
                     if (string.IsNullOrEmpty(entry.Name)) continue;
 
                     string entryPath = Path.Combine(folderName, entry.Name);
-                    var newEntry = archive.CreateEntry(entryPath);
 
-                    using var sourceStream = entry.Open();
-                    using var newStream = newEntry.Open();
-                    sourceStream.CopyTo(newStream);
+                    if (IsUnsupportedImageFile(Path.GetExtension(entryPath)))
+                    {
+                        var newEntry = archive.CreateEntry(Path.Combine(
+                            Path.GetDirectoryName(entryPath) ?? throw new InvalidOperationException("Directory can't be null"),
+                            $"{Path.GetFileNameWithoutExtension(entryPath)}.jpg"));
+
+                        using var newStream = newEntry.Open();
+
+                        using var sourceStream = ConvertImage(entry);
+                        sourceStream.CopyTo(newStream);
+                    }
+                    else
+                    {
+                        var newEntry = archive.CreateEntry(entryPath);
+                        using var newStream = newEntry.Open();
+
+                        using var sourceStream = entry.Open();
+                        sourceStream.CopyTo(newStream);
+                    }
 
                     volumeSize += entry.CompressedLength;
                 }
@@ -166,6 +184,21 @@ static void ReorganizeComics(string sourceDirectory, string outputDirectory, Con
         }
 
         Console.WriteLine(" done.");
+    }
+
+    bool IsUnsupportedImageFile(string extension) => extension is ".bmp" or ".gif" or ".tiff" or ".webp";
+
+    Stream ConvertImage(ZipArchiveEntry entry)
+    {
+        using var sourceStream = entry.Open();
+
+        using var image = Image.Load(sourceStream);
+
+        var ms = new MemoryStream();
+        image.Save(ms, new JpegEncoder());
+        ms.Position = 0;
+
+        return ms;
     }
 }
 
